@@ -10,8 +10,8 @@ from services.database import (
     get_transactions,
     get_net_worth_history,
     add_net_worth_snapshot,
+    delete_net_worth_snapshot,
 )
-
 
 st.title("📊 우리집 자산 현황")
 
@@ -164,18 +164,188 @@ if st.button(
 
     st.rerun()
 
+    
+# 3. 자산 현황 스냅샷 저장
+st.divider()
+st.subheader("📸 자산 현황 기록")
 
-# =========================================================
-# 4. 자산 / 부채 / 순자산 변화
-# =========================================================
+snapshot_date = st.date_input(
+    "기록 날짜",
+    value=date.today()
+)
 
+if st.button(
+    "현재 자산 현황 저장",
+    key="save_net_worth_snapshot"
+):
+    add_net_worth_snapshot(
+        record_date=snapshot_date,
+        total_assets=total_assets,
+        total_debts=total_debts,
+        net_worth=net_worth,
+    )
+
+    st.success(
+        f"{snapshot_date} 자산 현황을 저장했습니다."
+    )
+    st.rerun()
+
+
+# 저장된 자산 현황 조회
+history = get_net_worth_history()
+
+
+# 4. 저장된 자산 현황
+st.divider()
+st.subheader("📋 저장된 자산 현황")
+
+if history:
+    history_table_df = pd.DataFrame(history)
+
+    history_table_df["record_date"] = pd.to_datetime(
+        history_table_df["record_date"]
+    )
+
+    history_table_df["total_assets"] = (
+        history_table_df["total_assets"].astype(float)
+    )
+
+    history_table_df["total_debts"] = (
+        history_table_df["total_debts"].astype(float)
+    )
+
+    history_table_df["net_worth"] = (
+        history_table_df["net_worth"].astype(float)
+    )
+
+    # 최근 날짜가 위로 오도록 정렬
+    history_table_df = history_table_df.sort_values(
+        "record_date",
+        ascending=False
+    )
+
+    display_history_df = history_table_df[
+        [
+            "record_date",
+            "total_assets",
+            "total_debts",
+            "net_worth",
+        ]
+    ].copy()
+
+    display_history_df = display_history_df.rename(
+        columns={
+            "record_date": "기록 날짜",
+            "total_assets": "총 자산",
+            "total_debts": "총 부채",
+            "net_worth": "순자산",
+        }
+    )
+
+    st.dataframe(
+        display_history_df,
+        width="stretch",
+        hide_index=True,
+        column_config={
+            "기록 날짜": st.column_config.DateColumn(
+                "기록 날짜",
+                format="YYYY-MM-DD",
+            ),
+            "총 자산": st.column_config.NumberColumn(
+                "총 자산",
+                format="₩ %d",
+            ),
+            "총 부채": st.column_config.NumberColumn(
+                "총 부채",
+                format="₩ %d",
+            ),
+            "순자산": st.column_config.NumberColumn(
+                "순자산",
+                format="₩ %d",
+            ),
+        },
+    )
+
+    # 기록 삭제
+    st.subheader("🗑 기록 삭제")
+
+    history_options = {
+        (
+            f'{item["record_date"]} · '
+            f'순자산 ₩{int(float(item["net_worth"])):,}'
+        ): item["id"]
+        for item in history
+    }
+
+    selected_history_label = st.selectbox(
+        "삭제할 기록을 선택하세요.",
+        options=list(history_options.keys()),
+        key="delete_history_select",
+    )
+
+    selected_history_id = history_options[
+        selected_history_label
+    ]
+
+    if "history_delete_confirm" not in st.session_state:
+        st.session_state.history_delete_confirm = False
+
+    if not st.session_state.history_delete_confirm:
+
+        if st.button(
+            "선택한 기록 삭제",
+            key="delete_history_button",
+        ):
+            st.session_state.history_delete_confirm = True
+            st.rerun()
+
+    else:
+        st.warning(
+            f"{selected_history_label} 기록을 "
+            "정말 삭제하시겠습니까?"
+        )
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            if st.button(
+                "삭제 확인",
+                type="primary",
+                key="confirm_history_delete",
+                use_container_width=True,
+            ):
+                delete_net_worth_snapshot(
+                    selected_history_id
+                )
+
+                st.session_state.history_delete_confirm = False
+
+                st.success(
+                    "자산 현황 기록을 삭제했습니다."
+                )
+
+                st.rerun()
+
+        with col2:
+            if st.button(
+                "취소",
+                key="cancel_history_delete",
+                use_container_width=True,
+            ):
+                st.session_state.history_delete_confirm = False
+                st.rerun()
+
+else:
+    st.info(
+        "아직 저장된 자산 현황 기록이 없습니다."
+    )
+
+
+# 5. 자산 / 부채 / 순자산 변화
 st.divider()
 st.subheader("📈 자산 변화")
 
-history = get_net_worth_history()
-
 if history:
-
     history_df = pd.DataFrame(history)
 
     history_df["record_date"] = pd.to_datetime(
@@ -183,20 +353,16 @@ if history:
     )
 
     history_df["total_assets"] = (
-        history_df["total_assets"]
-        .astype(float)
+        history_df["total_assets"].astype(float)
     )
 
     history_df["total_debts"] = (
-        history_df["total_debts"]
-        .astype(float)
+        history_df["total_debts"].astype(float)
     )
 
     history_df["net_worth"] = (
-        history_df["net_worth"]
-        .astype(float)
+        history_df["net_worth"].astype(float)
     )
-
 
     chart_df = history_df[
         [
@@ -207,7 +373,6 @@ if history:
         ]
     ].copy()
 
-
     chart_df = chart_df.rename(
         columns={
             "record_date": "날짜",
@@ -216,7 +381,6 @@ if history:
             "net_worth": "순자산",
         }
     )
-
 
     chart_df = chart_df.melt(
         id_vars="날짜",
@@ -229,7 +393,6 @@ if history:
         value_name="금액",
     )
 
-
     fig_net_worth = px.line(
         chart_df,
         x="날짜",
@@ -240,7 +403,7 @@ if history:
     )
 
     fig_net_worth.update_layout(
-        yaxis_tickformat=",",
+        yaxis_tickformat=","
     )
 
     st.plotly_chart(
@@ -250,10 +413,9 @@ if history:
     )
 
 else:
-
     st.info(
-        "아직 저장된 자산 기록이 없습니다. "
-        "위의 '현재 자산 현황 저장' 버튼을 눌러주세요."
+        "자산 변화 그래프를 표시하려면 "
+        "먼저 자산 현황을 저장해주세요."
     )
 
 

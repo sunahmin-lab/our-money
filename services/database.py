@@ -326,3 +326,16 @@ def get_family_id():
     )
 
     return response.data["family_id"]
+
+def delete_net_worth_snapshot(snapshot_id):
+    supabase = get_supabase()
+
+    response = (
+        supabase
+        .table("net_worth_history")
+        .delete()
+        .eq("id", snapshot_id)
+        .execute()
+    )
+
+    return response.data
