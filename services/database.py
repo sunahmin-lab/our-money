@@ -258,39 +258,42 @@ def add_transaction(
     subcategory=None,
     counts_for_performance=True,
 ):
-    supabase = get_supabase()
+    """
+    새 수입/지출을 저장하고 공동 가용자산에 동시에 반영한다.
+
+    신규 거래는 Supabase RPC 내부에서
+    transactions 기록 + 가용자산 증감을 하나의 DB 트랜잭션으로 처리한다.
+    """
     family_id = get_family_id()
 
     response = (
-        supabase
-        .table("transactions")
-        .insert({
-            "family_id": family_id,
-            "transaction_date":
-                str(transaction_date),
-            "transaction_type":
-                transaction_type,
-            "category":
-                category,
-            "subcategory":
-                subcategory,
-            "owner":
-                owner,
-            "amount":
-                amount,
-            "memo":
-                memo,
-            "card_id":
-                card_id,
-            "counts_for_performance":
-                bool(
+        get_supabase()
+        .rpc(
+            "add_household_transaction",
+            {
+                "p_family_id": family_id,
+                "p_transaction_date": str(transaction_date),
+                "p_transaction_type": transaction_type,
+                "p_category": category,
+                "p_owner": owner,
+                "p_amount": float(amount),
+                "p_memo": memo or None,
+                "p_card_id": (
+                    int(card_id)
+                    if card_id is not None
+                    else None
+                ),
+                "p_subcategory": subcategory or None,
+                "p_counts_for_performance": bool(
                     counts_for_performance
                 ),
-        })
+            },
+        )
         .execute()
     )
 
     return response.data
+
 
 def update_transaction(
     transaction_id,
@@ -304,54 +307,62 @@ def update_transaction(
     subcategory=None,
     counts_for_performance=True,
 ):
-    supabase = get_supabase()
+    """
+    거래를 수정한다.
 
+    가용자산 자동반영 이후 생성된 거래만
+    기존 효과를 원복한 뒤 새 금액을 적용한다.
+    전환 이전의 과거 거래는 현재 가용자산을 건드리지 않는다.
+    """
     response = (
-        supabase
-        .table("transactions")
-        .update({
-            "transaction_date":
-                str(transaction_date),
-            "transaction_type":
-                transaction_type,
-            "category":
-                category,
-            "subcategory":
-                subcategory,
-            "owner":
-                owner,
-            "amount":
-                amount,
-            "memo":
-                memo,
-            "card_id":
-                card_id,
-            "counts_for_performance":
-                bool(
+        get_supabase()
+        .rpc(
+            "update_household_transaction",
+            {
+                "p_transaction_id": int(transaction_id),
+                "p_transaction_date": str(transaction_date),
+                "p_transaction_type": transaction_type,
+                "p_category": category,
+                "p_owner": owner,
+                "p_amount": float(amount),
+                "p_memo": memo or None,
+                "p_card_id": (
+                    int(card_id)
+                    if card_id is not None
+                    else None
+                ),
+                "p_subcategory": subcategory or None,
+                "p_counts_for_performance": bool(
                     counts_for_performance
                 ),
-        })
-        .eq(
-            "id",
-            transaction_id,
+            },
         )
         .execute()
     )
 
     return response.data
 
-def delete_transaction(transaction_id):
-    supabase = get_supabase()
 
+def delete_transaction(transaction_id):
+    """
+    거래를 삭제한다.
+
+    가용자산 자동반영 거래라면 해당 영향을 먼저 원복하고 삭제한다.
+    전환 이전의 과거 거래는 가용자산에 영향을 주지 않는다.
+    """
     response = (
-        supabase
-        .table("transactions")
-        .delete()
-        .eq("id", transaction_id)
+        get_supabase()
+        .rpc(
+            "delete_household_transaction",
+            {
+                "p_transaction_id": int(transaction_id),
+            },
+        )
         .execute()
     )
 
     return response.data
+
 
 def get_net_worth_history():
     supabase = get_supabase()
@@ -482,27 +493,6 @@ def logout():
 
         if key in st.session_state:
             del st.session_state[key]
-
-def get_family_id():
-    supabase = get_supabase()
-
-    user_response = supabase.auth.get_user()
-
-    if not user_response.user:
-        raise Exception("로그인된 사용자가 없습니다.")
-
-    user_id = user_response.user.id
-
-    response = (
-        supabase
-        .table("family_members")
-        .select("family_id")
-        .eq("user_id", user_id)
-        .single()
-        .execute()
-    )
-
-    return response.data["family_id"]
 
 def delete_net_worth_snapshot(snapshot_id):
     supabase = get_supabase()
@@ -1411,13 +1401,22 @@ def update_investment_account(
 def delete_investment_account(
     account_id,
 ):
-    supabase = get_supabase()
+    """
+    투자계좌 삭제.
+
+    신규 가용자산 연동 이후 기록된 입금/출금이 있다면
+    해당 가용자산 영향을 먼저 원복한 뒤 계좌를 삭제한다.
+    """
 
     response = (
-        supabase
-        .table("investment_accounts")
-        .delete()
-        .eq("id", account_id)
+        get_supabase()
+        .rpc(
+            "delete_household_investment_account",
+            {
+                "p_account_id":
+                    int(account_id),
+            },
+        )
         .execute()
     )
 
@@ -1475,55 +1474,108 @@ def add_investment_transaction(
     currency="KRW",
     exchange_rate=None,
 ):
-    supabase = get_supabase()
+    """
+    투자 거래 추가.
+
+    - 입금: 공동 가용자산 -> 선택한 투자계좌
+    - 출금: 선택한 투자계좌 -> 공동 가용자산
+    - 매수/매도/배당: 투자계좌 내부 거래이므로 가용자산 미변경
+    """
+
     family_id = get_family_id()
 
     response = (
-        supabase
-        .table("investment_transactions")
-        .insert({
-            "family_id": family_id,
-            "account_id": account_id,
-            "transaction_date": str(
-                transaction_date
-            ),
-            "transaction_type":
-                transaction_type,
-            "symbol":
-                symbol.strip()
-                if symbol
-                else None,
-            "asset_name":
-                asset_name.strip()
-                if asset_name
-                else None,
-            "quantity": quantity,
-            "price": price,
-            "amount": amount,
-            "fee": fee or 0,
-            "memo": memo,
-            "currency": currency,
-            "exchange_rate":
-                exchange_rate,
-        })
+        get_supabase()
+        .rpc(
+            "add_household_investment_transaction",
+            {
+                "p_family_id":
+                    family_id,
+
+                "p_account_id":
+                    int(account_id),
+
+                "p_transaction_date":
+                    str(transaction_date),
+
+                "p_transaction_type":
+                    transaction_type,
+
+                "p_symbol":
+                    (
+                        symbol.strip()
+                        if symbol
+                        else None
+                    ),
+
+                "p_asset_name":
+                    (
+                        asset_name.strip()
+                        if asset_name
+                        else None
+                    ),
+
+                "p_quantity":
+                    (
+                        float(quantity)
+                        if quantity is not None
+                        else None
+                    ),
+
+                "p_price":
+                    (
+                        float(price)
+                        if price is not None
+                        else None
+                    ),
+
+                "p_amount":
+                    (
+                        float(amount)
+                        if amount is not None
+                        else None
+                    ),
+
+                "p_fee":
+                    float(fee or 0),
+
+                "p_memo":
+                    memo or None,
+
+                "p_currency":
+                    currency or "KRW",
+
+                "p_exchange_rate":
+                    (
+                        float(exchange_rate)
+                        if exchange_rate is not None
+                        else None
+                    ),
+            },
+        )
         .execute()
     )
 
     return response.data
 
-
 def delete_investment_transaction(
     transaction_id,
 ):
-    supabase = get_supabase()
+    """
+    투자 거래 삭제.
+
+    가용자산에 영향을 준 신규 입금/출금이면
+    그 영향도 함께 원복한다.
+    """
 
     response = (
-        supabase
-        .table("investment_transactions")
-        .delete()
-        .eq(
-            "id",
-            transaction_id,
+        get_supabase()
+        .rpc(
+            "delete_household_investment_transaction",
+            {
+                "p_transaction_id":
+                    int(transaction_id),
+            },
         )
         .execute()
     )
@@ -1544,31 +1596,93 @@ def update_investment_transaction(
     currency="KRW",
     exchange_rate=None,
 ):
+    """
+    투자 거래 수정.
+
+    가용자산과 연결된 입금/출금은 금액 정합성을 위해
+    수정 대신 삭제 후 재등록하도록 제한한다.
+    """
+
     supabase = get_supabase()
+
+    current_response = (
+        supabase
+        .table("investment_transactions")
+        .select(
+            "id,transaction_type,affects_available_cash"
+        )
+        .eq(
+            "id",
+            transaction_id,
+        )
+        .single()
+        .execute()
+    )
+
+    current = current_response.data or {}
+
+    if bool(
+        current.get(
+            "affects_available_cash",
+            False,
+        )
+    ):
+        raise ValueError(
+            "가용자산과 연결된 투자 입금/출금은 "
+            "삭제 후 다시 등록해주세요."
+        )
+
+    if transaction_type in [
+        "입금",
+        "출금",
+    ]:
+        raise ValueError(
+            "투자 입금/출금으로 변경하려면 "
+            "기존 거래를 삭제한 뒤 새로 등록해주세요."
+        )
 
     response = (
         supabase
         .table("investment_transactions")
         .update({
-            "transaction_date": str(
-                transaction_date
-            ),
+            "transaction_date":
+                str(transaction_date),
+
             "transaction_type":
                 transaction_type,
+
             "symbol":
-                symbol.strip()
-                if symbol
-                else None,
+                (
+                    symbol.strip()
+                    if symbol
+                    else None
+                ),
+
             "asset_name":
-                asset_name.strip()
-                if asset_name
-                else None,
-            "quantity": quantity,
-            "price": price,
-            "amount": amount,
-            "fee": fee or 0,
-            "memo": memo,
-            "currency": currency,
+                (
+                    asset_name.strip()
+                    if asset_name
+                    else None
+                ),
+
+            "quantity":
+                quantity,
+
+            "price":
+                price,
+
+            "amount":
+                amount,
+
+            "fee":
+                fee or 0,
+
+            "memo":
+                memo,
+
+            "currency":
+                currency,
+
             "exchange_rate":
                 exchange_rate,
         })
@@ -1578,5 +1692,349 @@ def update_investment_transaction(
         )
         .execute()
     )
+
+    return response.data
+
+# ==================================================
+# 적금 상세정보
+# ==================================================
+
+def get_savings_details():
+    """
+    모든 적금 상세정보 조회
+    """
+
+    response = (
+        get_supabase()
+        .table("savings_details")
+        .select("*")
+        .execute()
+    )
+
+    return response.data or []
+
+
+def get_savings_detail(asset_id):
+    """
+    특정 적금 상세정보 조회
+    """
+
+    response = (
+        get_supabase()
+        .table("savings_details")
+        .select("*")
+        .eq(
+            "asset_id",
+            asset_id,
+        )
+        .execute()
+    )
+
+    if response.data:
+        return response.data[0]
+
+    return None
+
+
+def save_savings_detail(
+    asset_id,
+    monthly_payment,
+    interest_rate,
+    start_date=None,
+    maturity_date=None,
+    payment_day=None,
+    term_months=None,
+):
+    """
+    적금 상세정보 생성/수정
+    """
+
+    payload = {
+        "asset_id":
+            asset_id,
+
+        "monthly_payment":
+            float(
+                monthly_payment or 0
+            ),
+
+        "interest_rate":
+            float(
+                interest_rate or 0
+            ),
+
+        "start_date":
+            (
+                str(start_date)
+                if start_date
+                else None
+            ),
+
+        "maturity_date":
+            (
+                str(maturity_date)
+                if maturity_date
+                else None
+            ),
+
+        "payment_day":
+            (
+                int(payment_day)
+                if payment_day
+                else None
+            ),
+
+        "term_months":
+            (
+                int(term_months)
+                if term_months
+                else None
+            ),
+    }
+
+
+    response = (
+        get_supabase()
+        .table(
+            "savings_details"
+        )
+        .upsert(
+            payload,
+            on_conflict="asset_id",
+        )
+        .execute()
+    )
+
+
+    if response.data:
+        return response.data[0]
+
+    return None
+
+
+def delete_savings_detail(
+    asset_id,
+):
+    """
+    적금 상세정보만 삭제
+    """
+
+    return (
+        get_supabase()
+        .table(
+            "savings_details"
+        )
+        .delete()
+        .eq(
+            "asset_id",
+            asset_id,
+        )
+        .execute()
+    )
+
+# ==================================================
+# 적금 납입내역
+# ==================================================
+
+def get_savings_payments(
+    asset_id=None,
+):
+
+    query = (
+        get_supabase()
+        .table(
+            "savings_payments"
+        )
+        .select("*")
+    )
+
+
+    if asset_id is not None:
+
+        query = query.eq(
+            "asset_id",
+            asset_id,
+        )
+
+
+    response = (
+        query
+        .order(
+            "payment_date",
+            desc=True,
+        )
+        .order(
+            "id",
+            desc=True,
+        )
+        .execute()
+    )
+
+
+    return response.data or []
+
+
+def record_savings_payment(
+    asset_id,
+    payment_date,
+    amount,
+    memo="",
+):
+
+    response = (
+        get_supabase()
+        .rpc(
+            "record_savings_payment",
+            {
+                "p_asset_id":
+                    int(asset_id),
+
+                "p_payment_date":
+                    str(payment_date),
+
+                "p_amount":
+                    float(amount),
+
+                "p_memo":
+                    memo or None,
+            },
+        )
+        .execute()
+    )
+
+
+    return response.data
+
+
+def delete_savings_payment(
+    payment_id,
+):
+
+    return (
+        get_supabase()
+        .rpc(
+            "delete_savings_payment",
+            {
+                "p_payment_id":
+                    int(payment_id),
+            },
+        )
+        .execute()
+    )
+
+def get_available_cash_asset():
+    family_id = get_family_id()
+
+    response = (
+        get_supabase()
+        .table("assets")
+        .select("*")
+        .eq("family_id", family_id)
+        .eq("is_available_cash", True)
+        .limit(1)
+        .execute()
+    )
+
+    if response.data:
+        return response.data[0]
+
+    return None
+
+# ==================================================
+# 가용자산
+# ==================================================
+
+def save_available_cash_asset(
+    current_value,
+):
+    """
+    가족별 통합 가용자산을 생성하거나 현재금액을 수정한다.
+
+    주의:
+    이 값은 전환 시점의 실제 '지금 바로 사용할 수 있는 돈'을
+    기준값으로 입력하는 용도다.
+    과거 거래내역을 다시 합산하지 않는다.
+    """
+
+    supabase = get_supabase()
+    family_id = get_family_id()
+
+    current_value = float(
+        current_value or 0
+    )
+
+    if current_value < 0:
+        raise ValueError(
+            "가용자산은 0원 이상이어야 합니다."
+        )
+
+    existing = get_available_cash_asset()
+
+    if existing:
+
+        response = (
+            supabase
+            .table("assets")
+            .update({
+                "name":
+                    "우리집 가용자산",
+
+                "asset_type":
+                    "가용자산",
+
+                "owner":
+                    "공동",
+
+                "current_value":
+                    current_value,
+
+                "memo":
+                    (
+                        "생활비 및 즉시 사용할 수 있는 "
+                        "통합 가용자산"
+                    ),
+
+                "is_available_cash":
+                    True,
+            })
+            .eq(
+                "id",
+                existing["id"],
+            )
+            .execute()
+        )
+
+    else:
+
+        response = (
+            supabase
+            .table("assets")
+            .insert({
+                "family_id":
+                    family_id,
+
+                "name":
+                    "우리집 가용자산",
+
+                "asset_type":
+                    "가용자산",
+
+                "owner":
+                    "공동",
+
+                "current_value":
+                    current_value,
+
+                "memo":
+                    (
+                        "생활비 및 즉시 사용할 수 있는 "
+                        "통합 가용자산"
+                    ),
+
+                "is_available_cash":
+                    True,
+            })
+            .execute()
+        )
 
     return response.data

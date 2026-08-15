@@ -17,6 +17,10 @@ from services.database import (
     # 가계 운영 설정
     get_household_settings,
     save_household_settings,
+
+    # 가용자산
+    get_available_cash_asset,
+    save_available_cash_asset,
 )
 
 from utils.helpers import show_help
@@ -1136,8 +1140,128 @@ if main_categories:
         st.rerun()
 
 
+
 # ==================================================
-# 3. 가계 운영 설정
+# 3. 가용자산 설정
+# ==================================================
+
+st.divider()
+
+st.subheader(
+    "💵 우리집 가용자산"
+)
+
+
+show_help(
+    "가용자산이 무엇인가요?",
+    (
+        "현재 우리집에서 바로 사용할 수 있는 돈을 "
+        "은행 계좌별로 나누지 않고 하나의 금액으로 관리합니다. "
+        "앞으로 새로 등록하는 수입은 가용자산을 늘리고, "
+        "지출은 가용자산을 줄입니다."
+    ),
+    example=(
+        "예: 현재 통장 등에 실제로 바로 쓸 수 있는 돈이 "
+        "총 1,235만원이면 12,350,000원을 입력"
+    ),
+    warning=(
+        "처음 설정할 때 과거 거래내역을 다시 더하거나 빼지 마세요. "
+        "지금 이 순간 실제로 사용할 수 있는 금액을 그대로 입력합니다."
+    ),
+)
+
+
+available_cash_asset = (
+    get_available_cash_asset()
+)
+
+
+if available_cash_asset:
+
+    current_available_cash = int(
+        float(
+            available_cash_asset.get(
+                "current_value",
+                0,
+            )
+            or 0
+        )
+    )
+
+    st.metric(
+        "현재 가용자산",
+        f"₩{current_available_cash:,}",
+    )
+
+else:
+
+    current_available_cash = 0
+
+    st.warning(
+        "아직 가용자산 기준금액이 설정되어 있지 않습니다."
+    )
+
+
+with st.form(
+    "available_cash_settings_form"
+):
+
+    available_cash_value = (
+        st.number_input(
+            "현재 실제 가용자산",
+            min_value=0,
+            value=current_available_cash,
+            step=10000,
+            help=(
+                "지금 바로 사용할 수 있는 현금·입출금성 자산의 "
+                "현재 합계만 입력하세요."
+            ),
+        )
+    )
+
+
+    available_cash_submit = (
+        st.form_submit_button(
+            (
+                "가용자산 기준금액 저장"
+                if available_cash_asset
+                else "가용자산 시작금액 설정"
+            ),
+            use_container_width=True,
+        )
+    )
+
+
+if available_cash_submit:
+
+    try:
+
+        save_available_cash_asset(
+            available_cash_value
+        )
+
+        st.success(
+            "가용자산 기준금액을 저장했습니다."
+        )
+
+        st.info(
+            (
+                "이제부터 새로 입력하는 수입·지출과 "
+                "적금 납입이 이 금액을 기준으로 반영됩니다."
+            )
+        )
+
+        st.rerun()
+
+    except Exception as e:
+
+        st.error(
+            f"가용자산을 저장하지 못했습니다: {e}"
+        )
+
+
+# ==================================================
+# 4. 가계 운영 설정
 # ==================================================
 
 st.divider()
@@ -1148,15 +1272,15 @@ st.subheader(
 
 
 show_help(
-    "용돈과 투자금은 어떻게 계산되나요?",
+    "투자금은 어떻게 관리하나요?",
     (
-        "월급 등 가계 수입이 들어오면 각자의 용돈과 투자금을 "
-        "먼저 배정하고, 여행자금도 따로 적립한 뒤 "
-        "남은 돈을 공동생활비로 사용하는 구조입니다."
+        "월 투자금은 이번 달에 각자 투자계좌로 얼마나 옮길지 "
+        "목표를 정하는 값입니다. 실제 자금 이동은 투자 페이지에서 "
+        "'입금' 거래로 기록합니다."
     ),
     example=(
         "예: 내 투자금 50만원 + 남편 투자금 50만원을 "
-        "매달 먼저 배정"
+        "매달 투자 목표로 설정"
     ),
 )
 
@@ -1178,28 +1302,6 @@ show_help(
 
 household_settings = (
     get_household_settings()
-)
-
-
-current_my_allowance = int(
-    float(
-        household_settings.get(
-            "my_allowance",
-            0,
-        )
-        or 0
-    )
-)
-
-
-current_spouse_allowance = int(
-    float(
-        household_settings.get(
-            "spouse_allowance",
-            0,
-        )
-        or 0
-    )
 )
 
 
@@ -1228,38 +1330,6 @@ current_spouse_investment_budget = int(
 with st.form(
     "household_settings_form"
 ):
-
-    st.markdown(
-        "#### 👛 월 용돈"
-    )
-
-
-    col1, col2 = st.columns(2)
-
-
-    with col1:
-
-        my_allowance = (
-            st.number_input(
-                "내 월 용돈",
-                min_value=0,
-                value=current_my_allowance,
-                step=10000,
-            )
-        )
-
-
-    with col2:
-
-        spouse_allowance = (
-            st.number_input(
-                "남편 월 용돈",
-                min_value=0,
-                value=current_spouse_allowance,
-                step=10000,
-            )
-        )
-
 
     st.markdown(
         "#### 📈 월 투자금 배정"
@@ -1308,8 +1378,20 @@ with st.form(
 if household_settings_submit:
 
     save_household_settings(
-        my_allowance=my_allowance,
-        spouse_allowance=spouse_allowance,
+        my_allowance=(
+            household_settings.get(
+                "my_allowance",
+                0,
+            )
+            or 0
+        ),
+        spouse_allowance=(
+            household_settings.get(
+                "spouse_allowance",
+                0,
+            )
+            or 0
+        ),
         my_investment_budget=(
             my_investment_budget
         ),

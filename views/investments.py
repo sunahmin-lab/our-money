@@ -12,6 +12,7 @@ from services.database import (
     add_investment_transaction,
     delete_investment_transaction,
     get_household_settings,
+    get_available_cash_asset,
 )
 
 from services.investment import (
@@ -51,8 +52,10 @@ show_help(
 show_help(
     "투자금과 매수는 왜 따로 기록하나요?",
     (
-        "투자금 입금은 가계에서 투자계좌로 실제 돈을 배정한 것이고, "
-        "매수는 그 계좌 안의 현금으로 주식이나 ETF를 구입한 것입니다."
+        "투자금 입금은 공동 가용자산에서 선택한 개인 투자계좌로 "
+        "돈을 옮기는 것입니다. 반대로 투자계좌에서 출금하면 "
+        "공동 가용자산으로 돌아옵니다. 매수·매도·배당은 "
+        "투자계좌 내부의 자금 흐름입니다."
     ),
     example=(
         "예: ISA에 50만원 입금 → 입금 500,000원 / "
@@ -69,6 +72,46 @@ accounts = get_investment_accounts()
 household_settings = (
     get_household_settings()
 )
+
+available_cash_asset = (
+    get_available_cash_asset()
+)
+
+available_cash_value = (
+    float(
+        available_cash_asset.get(
+            "current_value",
+            0,
+        )
+        or 0
+    )
+    if available_cash_asset
+    else 0.0
+)
+
+# ==================================================
+# 가용자산
+# ==================================================
+
+if available_cash_asset:
+
+    st.metric(
+        "💵 현재 공동 가용자산",
+        f"₩{available_cash_value:,.0f}",
+    )
+
+    st.caption(
+        "투자계좌에 '입금'하면 이 금액이 줄고, "
+        "'출금'하면 다시 늘어납니다."
+    )
+
+else:
+
+    st.warning(
+        "가용자산 기준금액이 설정되어 있지 않습니다. "
+        "설정 → 우리집 가용자산에서 먼저 현재 금액을 입력해주세요."
+    )
+
 
 # ==================================================
 # 우리집 전체 투자 현황
@@ -1975,6 +2018,48 @@ if transaction_type in [
     )
 
 
+    if amount > 0:
+
+        if transaction_type == "입금":
+
+            after_available_cash = (
+                available_cash_value
+                - amount
+            )
+
+            st.caption(
+                (
+                    f"입금 후 공동 가용자산 예상: "
+                    f"₩{after_available_cash:,.0f}"
+                )
+            )
+
+            if (
+                available_cash_asset
+                and amount
+                > available_cash_value
+            ):
+
+                st.warning(
+                    "현재 공동 가용자산보다 큰 금액입니다."
+                )
+
+
+        elif transaction_type == "출금":
+
+            after_available_cash = (
+                available_cash_value
+                + amount
+            )
+
+            st.caption(
+                (
+                    f"출금 후 공동 가용자산 예상: "
+                    f"₩{after_available_cash:,.0f}"
+                )
+            )
+
+
 # ==================================================
 # 매수 / 매도
 # ==================================================
@@ -2846,6 +2931,36 @@ if st.button(
             valid = False
 
 
+    if (
+        transaction_type
+        in ["입금", "출금"]
+        and not available_cash_asset
+    ):
+
+        st.error(
+            "먼저 설정 페이지에서 공동 가용자산을 설정해주세요."
+        )
+
+        valid = False
+
+
+    if (
+        transaction_type == "입금"
+        and available_cash_asset
+        and amount is not None
+        and amount > available_cash_value
+    ):
+
+        st.error(
+            (
+                "공동 가용자산 잔액이 부족합니다. "
+                f"현재 가용자산: ₩{available_cash_value:,.0f}"
+            )
+        )
+
+        valid = False
+
+
     elif transaction_type in [
         "매수",
         "매도",
@@ -3085,6 +3200,23 @@ if transactions:
                     or 0
                 ),
 
+            "가용자산반영":
+                (
+                    "반영됨"
+                    if bool(
+                        tx.get(
+                            "affects_available_cash",
+                            False,
+                        )
+                    )
+                    else (
+                        "기존기록"
+                        if tx_type
+                        in ["입금", "출금"]
+                        else "-"
+                    )
+                ),
+
             "메모":
                 (
                     tx.get(
@@ -3141,6 +3273,54 @@ if transactions:
             delete_label
         ]
     )
+
+
+    delete_affects_cash = bool(
+        delete_target.get(
+            "affects_available_cash",
+            False,
+        )
+    )
+
+
+    if delete_affects_cash:
+
+        if (
+            delete_target.get(
+                "transaction_type"
+            )
+            == "입금"
+        ):
+
+            st.caption(
+                "이 입금 기록을 삭제하면 해당 금액이 "
+                "공동 가용자산으로 되돌아갑니다."
+            )
+
+        elif (
+            delete_target.get(
+                "transaction_type"
+            )
+            == "출금"
+        ):
+
+            st.caption(
+                "이 출금 기록을 삭제하면 해당 금액만큼 "
+                "공동 가용자산이 다시 감소합니다."
+            )
+
+
+    elif (
+        delete_target.get(
+            "transaction_type"
+        )
+        in ["입금", "출금"]
+    ):
+
+        st.caption(
+            "전환 이전의 기존 입출금 기록입니다. "
+            "삭제해도 현재 공동 가용자산은 변경하지 않습니다."
+        )
 
 
     if (
@@ -3220,34 +3400,44 @@ if transactions:
                 ),
             ):
 
-                delete_investment_transaction(
-                    delete_target[
-                        "id"
-                    ]
-                )
+                try:
+
+                    delete_investment_transaction(
+                        delete_target[
+                            "id"
+                        ]
+                    )
 
 
-                st.session_state[
-                    "investment_delete_confirm"
-                ] = False
+                    st.session_state[
+                        "investment_delete_confirm"
+                    ] = False
 
 
-                st.session_state[
-                    "investment_delete_target"
-                ] = None
+                    st.session_state[
+                        "investment_delete_target"
+                    ] = None
 
 
-                st.session_state[
-                    price_session_key
-                ] = {}
+                    st.session_state[
+                        price_session_key
+                    ] = {}
 
 
-                st.session_state[
-                    exchange_rate_session_key
-                ] = {}
+                    st.session_state[
+                        exchange_rate_session_key
+                    ] = {}
 
 
-                st.rerun()
+                    st.rerun()
+
+
+                except Exception as e:
+
+                    st.error(
+                        "투자 거래를 삭제하지 "
+                        f"못했습니다: {e}"
+                    )
 
 
         with col2:
@@ -3410,8 +3600,9 @@ with st.expander(
 
 
     st.warning(
-        "투자계좌를 삭제하면 해당 계좌에 기록한 "
-        "모든 투자 거래도 함께 삭제됩니다."
+        "투자계좌를 삭제하면 해당 계좌의 모든 투자 거래도 함께 삭제됩니다. "
+        "가용자산 연동 이후의 입금·출금 기록이 있다면 "
+        "그 가용자산 영향도 함께 원복됩니다."
     )
 
 
@@ -3492,22 +3683,32 @@ with st.expander(
                 ),
             ):
 
-                delete_investment_account(
-                    account_id
-                )
+                try:
+
+                    delete_investment_account(
+                        account_id
+                    )
 
 
-                st.session_state[
-                    "investment_account_delete_confirm"
-                ] = False
+                    st.session_state[
+                        "investment_account_delete_confirm"
+                    ] = False
 
 
-                st.session_state[
-                    "investment_account_delete_target"
-                ] = None
+                    st.session_state[
+                        "investment_account_delete_target"
+                    ] = None
 
 
-                st.rerun()
+                    st.rerun()
+
+
+                except Exception as e:
+
+                    st.error(
+                        "투자계좌를 삭제하지 "
+                        f"못했습니다: {e}"
+                    )
 
 
         with col2:

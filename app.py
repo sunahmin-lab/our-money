@@ -117,6 +117,11 @@ pages = {
             icon="📈",
         ),
         st.Page(
+            "views/savings.py",
+            title="적금",
+            icon="🏦",
+        ),
+        st.Page(
                     "views/settings.py",
                     title="설정",
                     icon="⚙️",

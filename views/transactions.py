@@ -12,6 +12,7 @@ from services.database import (
     get_main_categories,
     get_subcategories,
     ensure_default_categories,
+    get_available_cash_asset,
 )
 
 from utils.helpers import show_help
@@ -28,6 +29,39 @@ ensure_default_categories()
 
 transactions = get_transactions()
 cards = get_cards()
+available_cash_asset = get_available_cash_asset()
+
+
+# ==================================================
+# 현재 가용자산 상태
+# ==================================================
+
+if available_cash_asset:
+
+    current_available_cash = float(
+        available_cash_asset.get(
+            "current_value",
+            0,
+        )
+        or 0
+    )
+
+    st.metric(
+        "💵 현재 가용자산",
+        f"₩{current_available_cash:,.0f}",
+    )
+
+    st.caption(
+        "새로 등록하는 수입은 가용자산을 늘리고, "
+        "지출은 가용자산을 줄입니다."
+    )
+
+else:
+
+    st.warning(
+        "가용자산 기준금액이 아직 설정되지 않았습니다. "
+        "설정 → 우리집 가용자산에서 먼저 현재 금액을 입력해주세요."
+    )
 
 
 # ==================================================
@@ -338,30 +372,38 @@ if submitted:
 
     else:
 
-        add_transaction(
-            transaction_date=transaction_date,
-            transaction_type=transaction_type,
-            category=selected_main_category_name,
-            subcategory=selected_subcategory_name,
-            owner=owner,
-            amount=amount,
-            memo=memo,
-            card_id=selected_card_id,
-            counts_for_performance=(
-                counts_for_performance
-                if (
-                    transaction_type == "지출"
-                    and payment_method == "카드"
-                )
-                else False
-            ),
-        )
+        try:
 
-        st.success(
-            "거래를 추가했습니다."
-        )
+            add_transaction(
+                transaction_date=transaction_date,
+                transaction_type=transaction_type,
+                category=selected_main_category_name,
+                subcategory=selected_subcategory_name,
+                owner=owner,
+                amount=amount,
+                memo=memo,
+                card_id=selected_card_id,
+                counts_for_performance=(
+                    counts_for_performance
+                    if (
+                        transaction_type == "지출"
+                        and payment_method == "카드"
+                    )
+                    else False
+                ),
+            )
 
-        st.rerun()
+            st.success(
+                "거래를 추가했습니다."
+            )
+
+            st.rerun()
+
+        except Exception as e:
+
+            st.error(
+                f"거래를 추가하지 못했습니다: {e}"
+            )
 
 
 # ==================================================
@@ -1056,50 +1098,58 @@ if edit_submit:
 
     else:
 
-        update_transaction(
-            transaction_id=transaction_id,
-            transaction_date=edit_date,
-            transaction_type=(
-                edit_transaction_type
-            ),
-            category=(
-                edit_main_category_name
-            ),
-            subcategory=(
-                edit_subcategory_name
-            ),
-            owner=edit_owner,
-            amount=edit_amount,
-            memo=edit_memo,
-            card_id=(
-                edit_card_id
-                if (
-                    edit_transaction_type
-                    == "지출"
-                    and
-                    edit_payment_method
-                    == "카드"
-                )
-                else None
-            ),
-            counts_for_performance=(
-                edit_counts_for_performance
-                if (
-                    edit_transaction_type
-                    == "지출"
-                    and
-                    edit_payment_method
-                    == "카드"
-                )
-                else False
-            ),
-        )
+        try:
 
-        st.success(
-            "거래를 수정했습니다."
-        )
+            update_transaction(
+                transaction_id=transaction_id,
+                transaction_date=edit_date,
+                transaction_type=(
+                    edit_transaction_type
+                ),
+                category=(
+                    edit_main_category_name
+                ),
+                subcategory=(
+                    edit_subcategory_name
+                ),
+                owner=edit_owner,
+                amount=edit_amount,
+                memo=edit_memo,
+                card_id=(
+                    edit_card_id
+                    if (
+                        edit_transaction_type
+                        == "지출"
+                        and
+                        edit_payment_method
+                        == "카드"
+                    )
+                    else None
+                ),
+                counts_for_performance=(
+                    edit_counts_for_performance
+                    if (
+                        edit_transaction_type
+                        == "지출"
+                        and
+                        edit_payment_method
+                        == "카드"
+                    )
+                    else False
+                ),
+            )
 
-        st.rerun()
+            st.success(
+                "거래를 수정했습니다."
+            )
+
+            st.rerun()
+
+        except Exception as e:
+
+            st.error(
+                f"거래를 수정하지 못했습니다: {e}"
+            )
 
 
 # ==================================================
@@ -1189,19 +1239,31 @@ else:
             use_container_width=True,
         ):
 
-            delete_transaction(
-                transaction_id
-            )
+            try:
 
-            st.session_state[
-                "transaction_delete_confirm"
-            ] = False
+                delete_transaction(
+                    transaction_id
+                )
 
-            st.session_state[
-                "transaction_delete_target"
-            ] = None
+                st.session_state[
+                    "transaction_delete_confirm"
+                ] = False
 
-            st.rerun()
+                st.session_state[
+                    "transaction_delete_target"
+                ] = None
+
+                st.success(
+                    "거래를 삭제했습니다."
+                )
+
+                st.rerun()
+
+            except Exception as e:
+
+                st.error(
+                    f"거래를 삭제하지 못했습니다: {e}"
+                )
 
 
     with col2:

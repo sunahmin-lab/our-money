@@ -16,6 +16,15 @@ from services.database import (
     get_funds,
     get_fund_transactions,
     get_household_settings,
+    get_available_cash_asset,
+    get_investment_accounts,
+    get_investment_transactions,
+)
+
+from services.investment import (
+    calculate_holdings,
+    evaluate_holdings,
+    calculate_account_summary,
 )
 
 from utils.helpers import show_help
@@ -28,13 +37,22 @@ st.title("📊 우리집 자산 현황")
 # 1. 기본 데이터 조회
 # ==================================================
 
-assets = get_assets()
-debts = get_debts()
-transactions = get_transactions()
-cards = get_cards()
-funds = get_funds()
+assets = get_assets() or []
+debts = get_debts() or []
+transactions = get_transactions() or []
+cards = get_cards() or []
+funds = get_funds() or []
 
 household_settings = get_household_settings()
+
+available_cash_asset = (
+    get_available_cash_asset()
+)
+
+investment_accounts = (
+    get_investment_accounts()
+    or []
+)
 
 today = date.today()
 
@@ -43,18 +61,493 @@ current_month = today.month
 
 
 # ==================================================
-# 2. 총 자산 / 총 부채 / 순자산
+# 2. 자산 분류 및 투자 평가
 # ==================================================
 
-total_assets = sum(
-    float(asset["current_value"])
+# --------------------------------------------------
+# 자산 메뉴에서 '투자자산'으로 보는 유형
+#
+# 투자 페이지의 모든 계좌 평가가 준비되면
+# 아래 자산유형은 assets.current_value 대신
+# 투자 페이지 평가액을 공식 투자금액으로 사용한다.
+# --------------------------------------------------
+
+investment_asset_types = {
+    "ISA",
+    "연금저축",
+    "투자",
+    "주식",
+    "ETF",
+}
+
+
+available_assets_value = sum(
+    float(
+        asset.get(
+            "current_value",
+            0,
+        )
+        or 0
+    )
     for asset in assets
+    if bool(
+        asset.get(
+            "is_available_cash",
+            False,
+        )
+    )
 )
 
+
+savings_assets_value = sum(
+    float(
+        asset.get(
+            "current_value",
+            0,
+        )
+        or 0
+    )
+    for asset in assets
+    if (
+        not bool(
+            asset.get(
+                "is_available_cash",
+                False,
+            )
+        )
+        and
+        asset.get(
+            "asset_type"
+        ) == "적금"
+    )
+)
+
+
+manual_investment_assets_value = sum(
+    float(
+        asset.get(
+            "current_value",
+            0,
+        )
+        or 0
+    )
+    for asset in assets
+    if (
+        not bool(
+            asset.get(
+                "is_available_cash",
+                False,
+            )
+        )
+        and
+        asset.get(
+            "asset_type"
+        )
+        in investment_asset_types
+    )
+)
+
+
+other_assets_value = sum(
+    float(
+        asset.get(
+            "current_value",
+            0,
+        )
+        or 0
+    )
+    for asset in assets
+    if (
+        not bool(
+            asset.get(
+                "is_available_cash",
+                False,
+            )
+        )
+        and
+        asset.get(
+            "asset_type"
+        ) != "적금"
+        and
+        asset.get(
+            "asset_type"
+        )
+        not in investment_asset_types
+    )
+)
+
+
+# ==================================================
+# 투자 페이지 평가액 계산
+#
+# investments.py에서 현재가/환율을 조회하면
+# 같은 Streamlit 세션의 session_state에 저장된다.
+#
+# 모든 투자계좌의 평가 준비가 끝난 경우에만
+# 평가액을 총자산의 투자금액으로 채택한다.
+#
+# 일부 계좌만 조회된 상태라면 총자산이 갑자기
+# 작아지는 것을 막기 위해 assets에 저장된
+# 투자자산 금액을 fallback으로 사용한다.
+# ==================================================
+
+investment_results = []
+
+all_investment_accounts_ready = bool(
+    investment_accounts
+)
+
+
+for investment_account in (
+    investment_accounts
+):
+
+    investment_account_id = (
+        investment_account[
+            "id"
+        ]
+    )
+
+
+    investment_transactions = (
+        get_investment_transactions(
+            investment_account_id
+        )
+        or []
+    )
+
+
+    investment_holdings = (
+        calculate_holdings(
+            investment_transactions
+        )
+    )
+
+
+    investment_price_map = (
+        st.session_state.get(
+            (
+                "investment_prices_"
+                f"{investment_account_id}"
+            ),
+            {},
+        )
+    )
+
+
+    investment_exchange_map = (
+        st.session_state.get(
+            (
+                "investment_exchange_rates_"
+                f"{investment_account_id}"
+            ),
+            {},
+        )
+    )
+
+
+    prices_ready = all(
+        (
+            symbol
+            in investment_price_map
+            and
+            investment_price_map[
+                symbol
+            ]
+            is not None
+        )
+        for symbol
+        in investment_holdings.keys()
+    )
+
+
+    rates_ready = True
+
+
+    for holding in (
+        investment_holdings.values()
+    ):
+
+        currency_code = (
+            holding.get(
+                "currency"
+            )
+            or "KRW"
+        ).upper()
+
+
+        if currency_code == "KRW":
+            continue
+
+
+        if (
+            currency_code
+            not in investment_exchange_map
+            or
+            investment_exchange_map[
+                currency_code
+            ]
+            is None
+        ):
+
+            rates_ready = False
+            break
+
+
+    # 종목이 없는 현금 계좌는 평가 가능
+    if not investment_holdings:
+
+        prices_ready = True
+        rates_ready = True
+
+
+    account_ready = (
+        prices_ready
+        and
+        rates_ready
+    )
+
+
+    if not account_ready:
+
+        all_investment_accounts_ready = (
+            False
+        )
+
+
+    if account_ready:
+
+        evaluated_holdings = (
+            evaluate_holdings(
+                investment_holdings,
+                price_map=(
+                    investment_price_map
+                ),
+                exchange_rate_map=(
+                    investment_exchange_map
+                ),
+            )
+        )
+
+
+        account_summary = (
+            calculate_account_summary(
+                investment_transactions,
+                evaluated_holdings,
+            )
+        )
+
+
+        investment_results.append({
+            "account":
+                investment_account,
+
+            "summary":
+                account_summary,
+        })
+
+
+# 투자계좌가 아예 없으면 수동 자산 값을 사용
+if not investment_accounts:
+
+    all_investment_accounts_ready = (
+        False
+    )
+
+
+if (
+    investment_accounts
+    and
+    all_investment_accounts_ready
+):
+
+    investment_value_source = (
+        "실시간 투자 평가액"
+    )
+
+
+    total_investment_value = sum(
+        float(
+            result[
+                "summary"
+            ][
+                "account_value"
+            ]
+        )
+        for result
+        in investment_results
+    )
+
+
+    my_investment_value = sum(
+        float(
+            result[
+                "summary"
+            ][
+                "account_value"
+            ]
+        )
+        for result
+        in investment_results
+        if (
+            result[
+                "account"
+            ][
+                "owner"
+            ]
+            == "나"
+        )
+    )
+
+
+    spouse_investment_value = sum(
+        float(
+            result[
+                "summary"
+            ][
+                "account_value"
+            ]
+        )
+        for result
+        in investment_results
+        if (
+            result[
+                "account"
+            ][
+                "owner"
+            ]
+            == "남편"
+        )
+    )
+
+
+    shared_investment_value = sum(
+        float(
+            result[
+                "summary"
+            ][
+                "account_value"
+            ]
+        )
+        for result
+        in investment_results
+        if (
+            result[
+                "account"
+            ][
+                "owner"
+            ]
+            == "공동"
+        )
+    )
+
+
+else:
+
+    investment_value_source = (
+        "자산 메뉴 등록값"
+    )
+
+
+    total_investment_value = (
+        manual_investment_assets_value
+    )
+
+
+    my_investment_value = sum(
+        float(
+            asset.get(
+                "current_value",
+                0,
+            )
+            or 0
+        )
+        for asset in assets
+        if (
+            asset.get(
+                "asset_type"
+            )
+            in investment_asset_types
+            and
+            asset.get(
+                "owner"
+            )
+            == "나"
+        )
+    )
+
+
+    spouse_investment_value = sum(
+        float(
+            asset.get(
+                "current_value",
+                0,
+            )
+            or 0
+        )
+        for asset in assets
+        if (
+            asset.get(
+                "asset_type"
+            )
+            in investment_asset_types
+            and
+            asset.get(
+                "owner"
+            )
+            == "남편"
+        )
+    )
+
+
+    shared_investment_value = sum(
+        float(
+            asset.get(
+                "current_value",
+                0,
+            )
+            or 0
+        )
+        for asset in assets
+        if (
+            asset.get(
+                "asset_type"
+            )
+            in investment_asset_types
+            and
+            asset.get(
+                "owner"
+            )
+            == "공동"
+        )
+    )
+
+
+# ==================================================
+# 총 자산 / 총 부채 / 순자산
+#
+# 각 자산군을 정확히 한 번씩만 합산한다.
+# ==================================================
+
+total_assets = (
+    available_assets_value
+    + savings_assets_value
+    + total_investment_value
+    + other_assets_value
+)
+
+
 total_debts = sum(
-    float(debt["balance"])
+    float(
+        debt.get(
+            "balance",
+            0,
+        )
+        or 0
+    )
     for debt in debts
 )
+
 
 net_worth = (
     total_assets
@@ -62,7 +555,13 @@ net_worth = (
 )
 
 
-col1, col2, col3 = st.columns(3)
+# ==================================================
+# 핵심 요약
+# ==================================================
+
+col1, col2, col3 = (
+    st.columns(3)
+)
 
 
 with col1:
@@ -89,20 +588,165 @@ with col3:
     )
 
 
+st.markdown(
+    "#### 자산 성격별 현황"
+)
+
+
+col1, col2, col3, col4 = (
+    st.columns(4)
+)
+
+
+with col1:
+
+    st.metric(
+        "💵 가용자산",
+        (
+            f"₩"
+            f"{int(available_assets_value):,}"
+        ),
+    )
+
+
+with col2:
+
+    st.metric(
+        "🏦 적금",
+        (
+            f"₩"
+            f"{int(savings_assets_value):,}"
+        ),
+    )
+
+
+with col3:
+
+    st.metric(
+        "📈 투자",
+        (
+            f"₩"
+            f"{int(total_investment_value):,}"
+        ),
+    )
+
+
+with col4:
+
+    st.metric(
+        "📦 기타자산",
+        (
+            f"₩"
+            f"{int(other_assets_value):,}"
+        ),
+    )
+
+
+# ==================================================
+# 나 / 남편 투자 분리 표시
+# ==================================================
+
+if (
+    total_investment_value > 0
+    or investment_accounts
+):
+
+    st.markdown(
+        "##### 투자 소유자별"
+    )
+
+
+    investment_cols = (
+        st.columns(3)
+    )
+
+
+    with investment_cols[0]:
+
+        st.metric(
+            "👩 내 투자",
+            (
+                f"₩"
+                f"{int(my_investment_value):,}"
+            ),
+        )
+
+
+    with investment_cols[1]:
+
+        st.metric(
+            "👨 남편 투자",
+            (
+                f"₩"
+                f"{int(spouse_investment_value):,}"
+            ),
+        )
+
+
+    with investment_cols[2]:
+
+        if (
+            shared_investment_value
+            > 0
+        ):
+
+            st.metric(
+                "👫 공동 투자",
+                (
+                    f"₩"
+                    f"{int(shared_investment_value):,}"
+                ),
+            )
+
+        else:
+
+            st.metric(
+                "투자 합계",
+                (
+                    f"₩"
+                    f"{int(total_investment_value):,}"
+                ),
+            )
+
+
+st.caption(
+    (
+        "투자금액 기준: "
+        f"{investment_value_source}"
+    )
+)
+
+
+if (
+    investment_accounts
+    and
+    not all_investment_accounts_ready
+):
+
+    st.info(
+        "투자계좌의 현재가·환율이 모두 조회되지 않아 "
+        "총자산에는 자산 메뉴에 저장된 투자자산 금액을 사용하고 있습니다. "
+        "투자 페이지에서 '전체 투자 시세 · 환율 새로고침'을 하면 "
+        "현재 평가액 기준으로 전환됩니다."
+    )
+
+
 show_help(
     "총 자산과 순자산은 어떻게 계산하나요?",
     (
-        "총 자산은 자산 메뉴에 등록한 실제 계좌, 예금, 적금, "
-        "주식, 부동산 등의 현재 가치를 합산합니다. "
+        "총 자산은 가용자산, 적금, 투자, 기타자산을 각각 한 번씩만 "
+        "합산합니다. 투자계좌의 현재가와 환율이 모두 조회된 경우에는 "
+        "투자 페이지의 평가액을 사용하고, 그렇지 않으면 자산 메뉴에 "
+        "등록된 투자자산 금액을 임시 기준으로 사용합니다. "
         "순자산은 총 자산에서 총 부채를 뺀 금액입니다."
     ),
     example=(
-        "예: 총 자산 1억원 - 총 부채 3천만원 "
-        "= 순자산 7천만원"
+        "예: 가용자산 1,000만원 + 적금 500만원 + "
+        "투자 2,000만원 + 기타 3,000만원 = 총자산 6,500만원"
     ),
     warning=(
-        "여행자금이나 용돈을 별도의 자산으로 다시 더하지 않습니다. "
-        "실제 통장 잔액이 자산에 등록되어 있다면 이미 총 자산에 포함되어 있습니다."
+        "목적자금 잔액, 적금 예상 만기금액, 투자 페이지 평가액을 "
+        "별도로 다시 더하지 않습니다."
     ),
 )
 
@@ -144,27 +788,6 @@ for transaction in transactions:
         ):
 
             monthly_expense += amount
-
-
-# ==================================================
-# 4. 용돈 설정
-# ==================================================
-
-my_allowance = float(
-    household_settings.get(
-        "my_allowance",
-        0,
-    )
-    or 0
-)
-
-spouse_allowance = float(
-    household_settings.get(
-        "spouse_allowance",
-        0,
-    )
-    or 0
-)
 
 
 # ==================================================
@@ -284,11 +907,6 @@ for fund in funds:
 # 6. 공동자금 계산
 # ==================================================
 
-total_allowance = (
-    my_allowance
-    + spouse_allowance
-)
-
 my_investment_budget = float(
     household_settings.get(
         "my_investment_budget",
@@ -314,8 +932,6 @@ total_investment_budget = (
 
 available_household_money = (
     monthly_income
-    - my_allowance
-    - spouse_allowance
     - monthly_fund_contribution
     - total_investment_budget
 )
@@ -375,32 +991,27 @@ with col3:
 st.markdown("#### 먼저 배정한 돈")
 
 
-col1, col2, col3 = st.columns(3)
+col1, col2 = st.columns(2)
 
 
 with col1:
-
-    st.metric(
-        "내 용돈",
-        f"₩{int(my_allowance):,}",
-    )
-
-
-with col2:
-
-    st.metric(
-        "남편 용돈",
-        f"₩{int(spouse_allowance):,}",
-    )
-
-
-with col3:
 
     st.metric(
         "목적자금 적립",
         (
             f"₩"
             f"{int(monthly_fund_contribution):,}"
+        ),
+    )
+
+
+with col2:
+
+    st.metric(
+        "투자금 배정",
+        (
+            f"₩"
+            f"{int(total_investment_budget):,}"
         ),
     )
 
@@ -418,26 +1029,30 @@ show_help(
     "공동생활 가능액은 어떻게 계산하나요?",
     (
         "두 사람의 월급 등 이번 달 수입에서 "
-        "내 용돈, 남편 용돈, 목적자금 적립액을 먼저 빼고 "
-        "남은 금액을 공동생활 가능액으로 계산합니다."
+        "목적자금 적립액과 월 투자금 배정액을 먼저 빼고 "
+        "남은 금액을 공동생활 가능액으로 계산합니다. "
+        "용돈은 별도 배정금으로 계산하지 않고 실제 지급 시 일반 지출로 처리합니다."
     ),
     example=(
-        "예: 수입 7,000,000원 - 용돈 800,000원 "
-        "- 여행자금 500,000원 = 공동생활 가능액 5,700,000원"
+        "예: 수입 7,000,000원 - 여행자금 500,000원 "
+        "- 투자금 1,000,000원 = 공동생활 가능액 5,500,000원"
     ),
 )
 
 
 show_help(
-    "용돈과 여행자금은 왜 지출에 포함하지 않나요?",
+    "용돈은 어떻게 처리하나요?",
     (
-        "용돈과 목적자금 적립은 공동생활비로 소비된 돈이라기보다 "
-        "월급에서 먼저 목적별로 배정한 돈으로 관리합니다. "
-        "따라서 생활비, 고정비, 경조사비 같은 실제 공동 지출과 분리합니다."
+        "용돈은 별도 관리하지 않습니다. 각자에게 실제로 지급한 시점에 "
+        "거래내역에서 일반 지출로 한 번만 기록하고, 그 이후 개인 사용처는 "
+        "앱에서 추적하지 않습니다."
+    ),
+    example=(
+        "예: 내 용돈 400,000원 지급 → 거래내역에서 지출 400,000원으로 기록"
     ),
     warning=(
-        "용돈 지급이나 여행자금 적립을 거래내역의 일반 지출로 "
-        "중복 입력하면 공동지출이 실제보다 크게 계산됩니다."
+        "용돈을 설정값으로 한 번 빼고 거래내역에서도 다시 지출로 입력하면 "
+        "이중 차감되므로, 앞으로는 거래내역 지출만 사용합니다."
     ),
 )
 
@@ -2237,36 +2852,57 @@ st.subheader(
 )
 
 
-if assets:
+asset_composition_rows = [
+    {
+        "자산구분":
+            "가용자산",
+        "금액":
+            available_assets_value,
+    },
+    {
+        "자산구분":
+            "적금",
+        "금액":
+            savings_assets_value,
+    },
+    {
+        "자산구분":
+            "투자",
+        "금액":
+            total_investment_value,
+    },
+    {
+        "자산구분":
+            "기타자산",
+        "금액":
+            other_assets_value,
+    },
+]
 
-    asset_df = pd.DataFrame(
-        assets
-    )
+
+asset_composition_df = pd.DataFrame(
+    asset_composition_rows
+)
 
 
-    asset_df[
-        "current_value"
-    ] = asset_df[
-        "current_value"
-    ].astype(float)
+asset_composition_df = (
+    asset_composition_df[
+        asset_composition_df[
+            "금액"
+        ]
+        > 0
+    ]
+)
 
 
-    asset_summary = (
-        asset_df
-        .groupby(
-            "asset_type",
-            as_index=False,
-        )["current_value"]
-        .sum()
-    )
-
+if not asset_composition_df.empty:
 
     fig_assets = px.pie(
-        asset_summary,
-        names="asset_type",
-        values="current_value",
+        asset_composition_df,
+        names="자산구분",
+        values="금액",
         hole=0.45,
-        title="자산 종류별 비중",
+        title="자산 성격별 비중",
     )
 
 
@@ -2277,30 +2913,111 @@ if assets:
     )
 
 
-    st.subheader(
-        "👫 소유자별 자산"
+else:
+
+    st.info(
+        "등록된 자산이 없습니다."
     )
 
 
-    owner_summary = (
-        asset_df
-        .groupby(
-            "owner",
-            as_index=False,
-        )["current_value"]
-        .sum()
+# ==================================================
+# 소유자별 자산
+#
+# 투자 평가액을 사용할 경우 투자자산은
+# 별도 계산값으로 소유자별 합계에 넣는다.
+# ==================================================
+
+st.subheader(
+    "👫 소유자별 자산"
+)
+
+
+owner_values = {
+    "나": 0.0,
+    "남편": 0.0,
+    "공동": 0.0,
+}
+
+
+# 투자자산을 제외한 assets
+for asset in assets:
+
+    if (
+        asset.get(
+            "asset_type"
+        )
+        in investment_asset_types
+    ):
+
+        continue
+
+
+    owner = (
+        asset.get(
+            "owner"
+        )
+        or "공동"
     )
 
+
+    if owner not in owner_values:
+
+        owner_values[
+            owner
+        ] = 0.0
+
+
+    owner_values[
+        owner
+    ] += float(
+        asset.get(
+            "current_value",
+            0,
+        )
+        or 0
+    )
+
+
+# 투자값은 정확히 한 번만 추가
+owner_values["나"] += (
+    my_investment_value
+)
+
+owner_values["남편"] += (
+    spouse_investment_value
+)
+
+owner_values["공동"] += (
+    shared_investment_value
+)
+
+
+owner_summary = pd.DataFrame(
+    [
+        {
+            "소유자":
+                owner,
+            "자산":
+                value,
+        }
+        for owner, value
+        in owner_values.items()
+        if value > 0
+    ]
+)
+
+
+if not owner_summary.empty:
 
     fig_owner = px.bar(
         owner_summary,
-        x="owner",
-        y="current_value",
+        x="소유자",
+        y="자산",
         title="소유자별 자산",
         labels={
-            "owner":
+            "소유자":
                 "소유자",
-            "current_value":
+            "자산":
                 "자산",
         },
     )
@@ -2316,5 +3033,11 @@ if assets:
 else:
 
     st.info(
-        "등록된 자산이 없습니다."
+        "소유자별로 표시할 자산이 없습니다."
     )
+
+
+st.caption(
+    "투자는 나와 남편의 계좌를 각각 분리해서 계산하며, "
+    "위 합계 화면에서만 부부 전체 자산으로 합산합니다."
+)
