@@ -289,11 +289,35 @@ total_allowance = (
     + spouse_allowance
 )
 
+my_investment_budget = float(
+    household_settings.get(
+        "my_investment_budget",
+        0,
+    )
+    or 0
+)
+
+
+spouse_investment_budget = float(
+    household_settings.get(
+        "spouse_investment_budget",
+        0,
+    )
+    or 0
+)
+
+
+total_investment_budget = (
+    my_investment_budget
+    + spouse_investment_budget
+)
 
 available_household_money = (
     monthly_income
-    - total_allowance
+    - my_allowance
+    - spouse_allowance
     - monthly_fund_contribution
+    - total_investment_budget
 )
 
 
@@ -559,45 +583,111 @@ show_help(
 
 
 # ==================================================
-# 9. 이번 달 카드 청구 예정
+# 9. 이번 달 카드 현황
 # ==================================================
 
 st.divider()
 
 st.subheader(
     f"💳 {current_year}년 "
-    f"{current_month}월 카드 청구 예정"
+    f"{current_month}월 카드 현황"
 )
 
 
-# --------------------------------------------------
-# 카드 청구 대상 기간
-# 이번 달 청구액 = 전월 1일 ~ 전월 말일 사용액
-# --------------------------------------------------
+# ==================================================
+# 날짜 계산 함수
+# ==================================================
+
+def get_offset_year_month(
+    base_year,
+    base_month,
+    month_offset,
+):
+    """
+    기준 연/월에서 month_offset만큼 이동한
+    연도와 월을 반환한다.
+
+    -1 = 전월
+     0 = 당월
+     1 = 다음 달
+    """
+
+    month_index = (
+        base_year * 12
+        + (base_month - 1)
+        + month_offset
+    )
+
+    result_year = (
+        month_index // 12
+    )
+
+    result_month = (
+        month_index % 12
+    ) + 1
+
+    return (
+        result_year,
+        result_month,
+    )
+
+
+def make_billing_date(
+    base_year,
+    base_month,
+    month_offset,
+    day,
+    is_month_end,
+):
+    """
+    카드 청구기간 날짜를 실제 date 객체로 변환한다.
+    """
+
+    year, month = (
+        get_offset_year_month(
+            base_year,
+            base_month,
+            month_offset,
+        )
+    )
+
+    last_day = calendar.monthrange(
+        year,
+        month,
+    )[1]
+
+
+    if is_month_end:
+
+        actual_day = last_day
+
+    else:
+
+        actual_day = min(
+            int(day or 1),
+            last_day,
+        )
+
+
+    return date(
+        year,
+        month,
+        actual_day,
+    )
+
+
+# ==================================================
+# 카드별 데이터 계산
+# ==================================================
+
+card_summaries = []
+
 
 current_month_start = date(
     current_year,
     current_month,
     1,
 )
-
-previous_month_end = (
-    current_month_start
-    - timedelta(days=1)
-)
-
-previous_month_start = date(
-    previous_month_end.year,
-    previous_month_end.month,
-    1,
-)
-
-
-# --------------------------------------------------
-# 카드별 기본 데이터
-# --------------------------------------------------
-
-card_totals = {}
 
 
 for card in cards:
@@ -606,130 +696,387 @@ for card in cards:
         card["id"]
     )
 
-    card_totals[
-        card_id
-    ] = {
-        "id": card_id,
-        "name": card["name"],
-        "owner": card["owner"],
-        "payment_day": int(
-            card["payment_day"]
-        ),
-        "amount": 0,
-    }
 
+    # ----------------------------------------------
+    # 카드 설정값
+    # ----------------------------------------------
 
-# --------------------------------------------------
-# 전월 카드 사용액 집계
-# --------------------------------------------------
-
-for transaction in transactions:
-
-    if (
-        transaction["transaction_type"]
-        != "지출"
-    ):
-        continue
-
-
-    card_id = transaction.get(
-        "card_id"
+    start_offset = int(
+        card.get(
+            "billing_start_month_offset",
+            -1,
+        )
     )
 
 
-    if card_id is None:
-        continue
+    end_offset = int(
+        card.get(
+            "billing_end_month_offset",
+            -1,
+        )
+    )
 
 
-    try:
+    start_day = card.get(
+        "billing_start_day"
+    )
 
-        card_id = int(
-            card_id
+
+    end_day = card.get(
+        "billing_end_day"
+    )
+
+
+    start_is_month_end = bool(
+        card.get(
+            "billing_start_is_month_end",
+            False,
+        )
+    )
+
+
+    end_is_month_end = bool(
+        card.get(
+            "billing_end_is_month_end",
+            True,
+        )
+    )
+
+
+    monthly_performance = float(
+        card.get(
+            "monthly_performance",
+            0,
+        )
+        or 0
+    )
+
+
+    # ----------------------------------------------
+    # 이번 달 청구대상 기간 계산
+    # ----------------------------------------------
+
+    billing_start_date = (
+        make_billing_date(
+            current_year,
+            current_month,
+            start_offset,
+            start_day,
+            start_is_month_end,
+        )
+    )
+
+
+    billing_end_date = (
+        make_billing_date(
+            current_year,
+            current_month,
+            end_offset,
+            end_day,
+            end_is_month_end,
+        )
+    )
+
+
+    # ----------------------------------------------
+    # 청구액 계산
+    # ----------------------------------------------
+
+    billing_amount = 0
+
+
+    # ----------------------------------------------
+    # 이번 달 실적
+    # ----------------------------------------------
+
+    performance_amount = 0
+
+
+    for transaction in transactions:
+
+        if (
+            transaction[
+                "transaction_type"
+            ]
+            != "지출"
+        ):
+
+            continue
+
+
+        transaction_card_id = (
+            transaction.get(
+                "card_id"
+            )
         )
 
-    except (
-        TypeError,
-        ValueError,
-    ):
 
-        continue
+        if transaction_card_id is None:
+
+            continue
 
 
-    transaction_date = (
-        date.fromisoformat(
+        try:
+
+            transaction_card_id = int(
+                transaction_card_id
+            )
+
+        except (
+            TypeError,
+            ValueError,
+        ):
+
+            continue
+
+
+        if (
+            transaction_card_id
+            != card_id
+        ):
+
+            continue
+
+
+        transaction_date = (
+            date.fromisoformat(
+                transaction[
+                    "transaction_date"
+                ]
+            )
+        )
+
+
+        transaction_amount = float(
             transaction[
-                "transaction_date"
+                "amount"
             ]
         )
+
+
+        # ------------------------------------------
+        # 이번 달 청구 예정액
+        # ------------------------------------------
+
+        if (
+            billing_start_date
+            <= transaction_date
+            <= billing_end_date
+        ):
+
+            billing_amount += (
+                transaction_amount
+            )
+
+
+        # ------------------------------------------
+        # 이번 달 카드 실적
+        #
+        # 이번 달 1일 ~ 오늘
+        # + 실적 포함 거래만
+        # ------------------------------------------
+
+        if (
+            current_month_start
+            <= transaction_date
+            <= today
+        ):
+
+            counts_for_performance = bool(
+                transaction.get(
+                    "counts_for_performance",
+                    True,
+                )
+            )
+
+
+            if counts_for_performance:
+
+                performance_amount += (
+                    transaction_amount
+                )
+
+
+    # ----------------------------------------------
+    # 결제일 계산
+    # ----------------------------------------------
+
+    last_payment_day = (
+        calendar.monthrange(
+            current_year,
+            current_month,
+        )[1]
     )
 
 
-    if not (
-        previous_month_start
-        <= transaction_date
-        <= previous_month_end
-    ):
-        continue
+    actual_payment_day = min(
+        int(
+            card["payment_day"]
+        ),
+        last_payment_day,
+    )
 
 
-    if card_id in card_totals:
+    payment_date = date(
+        current_year,
+        current_month,
+        actual_payment_day,
+    )
 
-        card_totals[
-            card_id
-        ]["amount"] += float(
-            transaction["amount"]
+
+    days_left = (
+        payment_date
+        - today
+    ).days
+
+
+    if days_left > 0:
+
+        payment_text = (
+            f"{current_month}월 "
+            f"{actual_payment_day}일 "
+            f"· D-{days_left}"
+        )
+
+    elif days_left == 0:
+
+        payment_text = (
+            "오늘 결제일"
+        )
+
+    else:
+
+        payment_text = (
+            f"{current_month}월 "
+            f"{actual_payment_day}일 "
+            f"· 결제일 지남"
         )
 
 
-# --------------------------------------------------
-# 실제 청구액이 있는 카드만
-# --------------------------------------------------
+    # ----------------------------------------------
+    # 실적 상태
+    # ----------------------------------------------
 
-used_cards = [
-    card
-    for card
-    in card_totals.values()
-    if card["amount"] > 0
-]
+    if monthly_performance > 0:
+
+        performance_remaining = max(
+            monthly_performance
+            - performance_amount,
+            0,
+        )
 
 
-if used_cards:
+        performance_rate = (
+            performance_amount
+            / monthly_performance
+        ) * 100
 
-    used_cards = sorted(
-        used_cards,
-        key=lambda x: (
-            x["owner"],
-            x["payment_day"],
-            x["name"],
-        ),
+
+        performance_achieved = (
+            performance_amount
+            >= monthly_performance
+        )
+
+    else:
+
+        performance_remaining = 0
+        performance_rate = 0
+        performance_achieved = False
+
+
+    # ----------------------------------------------
+    # 카드 데이터 저장
+    # ----------------------------------------------
+
+    card_summaries.append({
+        "id":
+            card_id,
+
+        "name":
+            card["name"],
+
+        "owner":
+            card["owner"],
+
+        "payment_day":
+            int(
+                card["payment_day"]
+            ),
+
+        "payment_date":
+            payment_date,
+
+        "payment_text":
+            payment_text,
+
+        "billing_start_date":
+            billing_start_date,
+
+        "billing_end_date":
+            billing_end_date,
+
+        "billing_amount":
+            billing_amount,
+
+        "monthly_performance":
+            monthly_performance,
+
+        "performance_amount":
+            performance_amount,
+
+        "performance_remaining":
+            performance_remaining,
+
+        "performance_rate":
+            performance_rate,
+
+        "performance_achieved":
+            performance_achieved,
+    })
+
+
+# ==================================================
+# 카드가 없는 경우
+# ==================================================
+
+if not card_summaries:
+
+    st.info(
+        "등록된 카드가 없습니다. "
+        "설정 → 카드 관리에서 카드를 추가해주세요."
     )
 
 
+else:
+
     # ==================================================
-    # 사람별 합계
+    # 사람별 청구액 계산
     # ==================================================
 
-    owner_totals = {}
+    my_card_total = sum(
+        card["billing_amount"]
+        for card in card_summaries
+        if card["owner"] == "나"
+    )
 
 
-    for card in used_cards:
+    spouse_card_total = sum(
+        card["billing_amount"]
+        for card in card_summaries
+        if card["owner"] == "남편"
+    )
 
-        owner = card["owner"]
 
-        if owner not in owner_totals:
-
-            owner_totals[
-                owner
-            ] = 0
-
-        owner_totals[
-            owner
-        ] += card["amount"]
+    shared_card_total = sum(
+        card["billing_amount"]
+        for card in card_summaries
+        if card["owner"] == "공동"
+    )
 
 
     total_card_bill = sum(
-        card["amount"]
-        for card in used_cards
+        card["billing_amount"]
+        for card in card_summaries
     )
 
 
@@ -738,36 +1085,38 @@ if used_cards:
     # ==================================================
 
     st.markdown(
-        "#### 이번 달 카드 청구 요약"
+        "#### 💳 이번 달 카드 청구 요약"
     )
 
 
-    summary_columns = st.columns(3)
+    col1, col2, col3 = (
+        st.columns(3)
+    )
 
 
-    with summary_columns[0]:
+    with col1:
 
         st.metric(
             "내 카드",
             (
                 f"₩"
-                f"{int(owner_totals.get('나', 0)):,}"
+                f"{int(my_card_total):,}"
             ),
         )
 
 
-    with summary_columns[1]:
+    with col2:
 
         st.metric(
             "남편 카드",
             (
                 f"₩"
-                f"{int(owner_totals.get('남편', 0)):,}"
+                f"{int(spouse_card_total):,}"
             ),
         )
 
 
-    with summary_columns[2]:
+    with col3:
 
         st.metric(
             "부부 총 카드청구액",
@@ -778,33 +1127,24 @@ if used_cards:
         )
 
 
-    # 공동 명의 카드가 있을 경우
-    shared_total = owner_totals.get(
-        "공동",
-        0,
-    )
-
-
-    if shared_total > 0:
+    if shared_card_total > 0:
 
         st.caption(
             "공동 카드 청구액 "
-            f"₩{int(shared_total):,}은 "
-            "위 부부 총 카드청구액에 포함되어 있습니다."
+            f"₩{int(shared_card_total):,}은 "
+            "부부 총 카드청구액에 포함되어 있습니다."
         )
 
 
+    # ==================================================
+    # 카드별 상세
+    # ==================================================
+
     st.divider()
 
-
-    # ==================================================
-    # 사용자별 카드 상세
-    # ==================================================
-
-    last_day = calendar.monthrange(
-        current_year,
-        current_month,
-    )[1]
+    st.markdown(
+        "#### 카드별 청구액 · 실적"
+    )
 
 
     owner_order = [
@@ -818,30 +1158,42 @@ if used_cards:
 
         owner_cards = [
             card
-            for card in used_cards
+            for card in card_summaries
             if card["owner"] == owner
         ]
 
 
         if not owner_cards:
+
             continue
 
 
-        # ----------------------------------------------
-        # 사용자 제목
-        # ----------------------------------------------
+        owner_cards = sorted(
+            owner_cards,
+            key=lambda x: (
+                x["payment_day"],
+                x["name"],
+            ),
+        )
+
 
         if owner == "나":
 
-            owner_title = "👩 내 카드"
+            owner_title = (
+                "👩 내 카드"
+            )
 
         elif owner == "남편":
 
-            owner_title = "👨 남편 카드"
+            owner_title = (
+                "👨 남편 카드"
+            )
 
         else:
 
-            owner_title = "👫 공동 카드"
+            owner_title = (
+                "👫 공동 카드"
+            )
 
 
         st.markdown(
@@ -849,93 +1201,196 @@ if used_cards:
         )
 
 
-        owner_total = sum(
-            card["amount"]
-            for card in owner_cards
-        )
-
-
         # ----------------------------------------------
-        # 카드별 상세
+        # 카드 하나씩 출력
         # ----------------------------------------------
 
         for card in owner_cards:
 
-            actual_payment_day = min(
-                card["payment_day"],
-                last_day,
+            st.markdown(
+                f'#### 💳 '
+                f'{card["name"]} · '
+                f'{card["owner"]}'
             )
 
 
-            payment_date = date(
-                current_year,
-                current_month,
-                actual_payment_day,
-            )
-
-
-            days_left = (
-                payment_date
-                - today
-            ).days
-
-
-            if days_left > 0:
-
-                payment_text = (
-                    f"{current_month}월 "
-                    f"{actual_payment_day}일 결제 "
-                    f"· D-{days_left}"
-                )
-
-            elif days_left == 0:
-
-                payment_text = (
-                    "오늘 결제일"
-                )
-
-            else:
-
-                payment_text = (
-                    f"{current_month}월 "
-                    f"{actual_payment_day}일 "
-                    f"· 결제일 지남"
-                )
-
-
-            col1, col2 = st.columns(
-                [3, 2]
+            col1, col2 = (
+                st.columns(2)
             )
 
 
             with col1:
 
                 st.metric(
-                    (
-                        f'{card["name"]} '
-                        f'· {card["owner"]}'
-                    ),
+                    "이번 달 청구 예정",
                     (
                         f'₩'
-                        f'{int(card["amount"]):,}'
+                        f'{int(card["billing_amount"]):,}'
                     ),
                 )
 
 
             with col2:
 
-                st.write(
-                    f"📅 {payment_text}"
+                st.metric(
+                    "결제일",
+                    (
+                        card[
+                            "payment_date"
+                        ].strftime(
+                            "%m/%d"
+                        )
+                    ),
+                )
+
+                st.caption(
+                    card[
+                        "payment_text"
+                    ]
                 )
 
 
+            st.caption(
+                "청구 대상 사용기간: "
+                f'{card["billing_start_date"].strftime("%Y-%m-%d")}'
+                " ~ "
+                f'{card["billing_end_date"].strftime("%Y-%m-%d")}'
+            )
+
+
+            # ==========================================
+            # 카드 실적
+            # ==========================================
+
+            monthly_performance = (
+                card[
+                    "monthly_performance"
+                ]
+            )
+
+
+            if monthly_performance > 0:
+
+                st.markdown(
+                    "##### 이번 달 카드 실적"
+                )
+
+
+                col1, col2, col3 = (
+                    st.columns(3)
+                )
+
+
+                with col1:
+
+                    st.metric(
+                        "현재 실적",
+                        (
+                            f'₩'
+                            f'{int(card["performance_amount"]):,}'
+                        ),
+                    )
+
+
+                with col2:
+
+                    st.metric(
+                        "실적 목표",
+                        (
+                            f'₩'
+                            f'{int(monthly_performance):,}'
+                        ),
+                    )
+
+
+                with col3:
+
+                    if (
+                        card[
+                            "performance_achieved"
+                        ]
+                    ):
+
+                        st.metric(
+                            "남은 실적",
+                            "달성 ✅",
+                        )
+
+                    else:
+
+                        st.metric(
+                            "남은 실적",
+                            (
+                                f'₩'
+                                f'{int(card["performance_remaining"]):,}'
+                            ),
+                        )
+
+
+                progress_value = min(
+                    card[
+                        "performance_amount"
+                    ]
+                    / monthly_performance,
+                    1.0,
+                )
+
+
+                st.progress(
+                    progress_value
+                )
+
+
+                if (
+                    card[
+                        "performance_achieved"
+                    ]
+                ):
+
+                    st.success(
+                        "이번 달 카드 실적을 "
+                        "달성했습니다."
+                    )
+
+
+                else:
+
+                    st.caption(
+                        "현재 달성률 "
+                        f'{card["performance_rate"]:.1f}%'
+                        " · 실적까지 "
+                        f'₩{int(card["performance_remaining"]):,} '
+                        "남음"
+                    )
+
+
+            else:
+
+                st.caption(
+                    "이 카드는 월 실적 목표가 "
+                    "설정되어 있지 않습니다."
+                )
+
+
+            st.divider()
+
+
         # ----------------------------------------------
-        # 사용자 합계
+        # 사용자별 합계
         # ----------------------------------------------
 
+        owner_total = sum(
+            card["billing_amount"]
+            for card in owner_cards
+        )
+
+
         st.metric(
-            f"{owner_title} 합계",
-            f"₩{int(owner_total):,}",
+            f"{owner_title} 청구 합계",
+            (
+                f"₩"
+                f"{int(owner_total):,}"
+            ),
         )
 
 
@@ -943,7 +1398,7 @@ if used_cards:
 
 
     # ==================================================
-    # 전체 합계
+    # 최종 전체 합계
     # ==================================================
 
     st.metric(
@@ -955,49 +1410,38 @@ if used_cards:
     )
 
 
-else:
-
-    st.info(
-        "이번 달 청구 예정 카드 사용 내역이 없습니다."
-    )
-
-
-st.caption(
-    "카드 사용기간: "
-    f"{previous_month_start} "
-    "~ "
-    f"{previous_month_end}"
-)
-
+# ==================================================
+# 카드 도움말
+# ==================================================
 
 show_help(
-    "카드 청구액은 어떻게 구분하나요?",
+    "청구액과 카드 실적은 왜 금액이 다를 수 있나요?",
     (
-        "카드는 카드명뿐 아니라 소유자까지 구분해서 관리합니다. "
-        "따라서 같은 신한카드 BEST-F를 사용하더라도 "
-        "'신한카드 BEST-F · 나'와 "
-        "'신한카드 BEST-F · 남편'은 서로 다른 카드로 계산됩니다."
+        "카드 청구액은 각 카드에 설정한 청구 대상 사용기간을 기준으로 계산하고, "
+        "카드 실적은 이번 달 1일부터 현재까지 사용한 금액 중 "
+        "'카드 실적에 포함'으로 기록한 거래만 합산합니다. "
+        "따라서 두 금액은 서로 다를 수 있습니다."
     ),
     example=(
-        "예: 내 BEST-F 35만원 + 남편 BEST-F 42만원 "
-        "= 부부 총 카드청구액 77만원"
+        "예: 8월 청구기간이 7월 1일~7월 31일이라면 "
+        "8월 청구액은 7월 사용액이고, "
+        "8월 실적은 8월에 사용한 실적 인정 금액입니다."
     ),
 )
 
 
 show_help(
-    "이번 달 카드 청구액은 어떤 기간인가요?",
+    "실적 금액은 카드사 앱과 완전히 동일한가요?",
     (
-        "우리 집 카드는 전월 1일부터 말일까지 사용한 금액이 "
-        "다음 달에 청구되도록 결제일을 설정해두었기 때문에 "
-        "이번 달 카드 청구액은 전월 카드 사용액을 합산합니다."
+        "우리 앱은 거래 등록 시 선택한 '카드 실적에 포함' 여부를 기준으로 "
+        "실적을 계산합니다. 카드사에서는 거래 취소, 할인 전후 금액, "
+        "상품권, 세금, 관리비 등 카드별 세부 규칙을 적용할 수 있으므로 "
+        "카드사 앱의 공식 실적과 차이가 날 수 있습니다."
     ),
-    example=(
-        "예: 8월 카드 청구액 = "
-        "7월 1일~7월 31일 카드 사용액"
+    warning=(
+        "실적이 중요한 달에는 카드사 앱의 공식 실적도 함께 확인하는 것이 안전합니다."
     ),
 )
-
 
 # ==================================================
 # 10. 이번 달 지출 분석

@@ -111,12 +111,16 @@ pages = {
             title="목적자금",
             icon="🎯",
         ),
-
         st.Page(
-            "views/settings.py",
-            title="설정",
-            icon="⚙️",
+            "views/investments.py",
+            title="투자",
+            icon="📈",
         ),
+        st.Page(
+                    "views/settings.py",
+                    title="설정",
+                    icon="⚙️",
+                ),
     ]
 }
 

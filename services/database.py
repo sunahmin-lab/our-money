@@ -256,6 +256,7 @@ def add_transaction(
     memo="",
     card_id=None,
     subcategory=None,
+    counts_for_performance=True,
 ):
     supabase = get_supabase()
     family_id = get_family_id()
@@ -265,9 +266,8 @@ def add_transaction(
         .table("transactions")
         .insert({
             "family_id": family_id,
-            "transaction_date": str(
-                transaction_date
-            ),
+            "transaction_date":
+                str(transaction_date),
             "transaction_type":
                 transaction_type,
             "category":
@@ -282,6 +282,10 @@ def add_transaction(
                 memo,
             "card_id":
                 card_id,
+            "counts_for_performance":
+                bool(
+                    counts_for_performance
+                ),
         })
         .execute()
     )
@@ -298,6 +302,7 @@ def update_transaction(
     memo="",
     card_id=None,
     subcategory=None,
+    counts_for_performance=True,
 ):
     supabase = get_supabase()
 
@@ -321,6 +326,10 @@ def update_transaction(
                 memo,
             "card_id":
                 card_id,
+            "counts_for_performance":
+                bool(
+                    counts_for_performance
+                ),
         })
         .eq(
             "id",
@@ -526,7 +535,18 @@ def get_cards():
     return response.data
 
 
-def add_card(name, owner, payment_day):
+def add_card(
+    name,
+    owner,
+    payment_day,
+    billing_start_month_offset=-1,
+    billing_start_day=1,
+    billing_start_is_month_end=False,
+    billing_end_month_offset=-1,
+    billing_end_day=None,
+    billing_end_is_month_end=True,
+    monthly_performance=0,
+):
     supabase = get_supabase()
     family_id = get_family_id()
 
@@ -537,7 +557,43 @@ def add_card(name, owner, payment_day):
             "family_id": family_id,
             "name": name.strip(),
             "owner": owner,
-            "payment_day": int(payment_day),
+            "payment_day": int(
+                payment_day
+            ),
+            "billing_start_month_offset":
+                int(
+                    billing_start_month_offset
+                ),
+            "billing_start_day":
+                (
+                    int(billing_start_day)
+                    if billing_start_day
+                    is not None
+                    else None
+                ),
+            "billing_start_is_month_end":
+                bool(
+                    billing_start_is_month_end
+                ),
+            "billing_end_month_offset":
+                int(
+                    billing_end_month_offset
+                ),
+            "billing_end_day":
+                (
+                    int(billing_end_day)
+                    if billing_end_day
+                    is not None
+                    else None
+                ),
+            "billing_end_is_month_end":
+                bool(
+                    billing_end_is_month_end
+                ),
+            "monthly_performance":
+                float(
+                    monthly_performance
+                ),
         })
         .execute()
     )
@@ -550,6 +606,13 @@ def update_card(
     name,
     owner,
     payment_day,
+    billing_start_month_offset=-1,
+    billing_start_day=1,
+    billing_start_is_month_end=False,
+    billing_end_month_offset=-1,
+    billing_end_day=None,
+    billing_end_is_month_end=True,
+    monthly_performance=0,
 ):
     supabase = get_supabase()
 
@@ -559,9 +622,48 @@ def update_card(
         .update({
             "name": name.strip(),
             "owner": owner,
-            "payment_day": int(payment_day),
+            "payment_day": int(
+                payment_day
+            ),
+            "billing_start_month_offset":
+                int(
+                    billing_start_month_offset
+                ),
+            "billing_start_day":
+                (
+                    int(billing_start_day)
+                    if billing_start_day
+                    is not None
+                    else None
+                ),
+            "billing_start_is_month_end":
+                bool(
+                    billing_start_is_month_end
+                ),
+            "billing_end_month_offset":
+                int(
+                    billing_end_month_offset
+                ),
+            "billing_end_day":
+                (
+                    int(billing_end_day)
+                    if billing_end_day
+                    is not None
+                    else None
+                ),
+            "billing_end_is_month_end":
+                bool(
+                    billing_end_is_month_end
+                ),
+            "monthly_performance":
+                float(
+                    monthly_performance
+                ),
         })
-        .eq("id", card_id)
+        .eq(
+            "id",
+            card_id,
+        )
         .execute()
     )
 
@@ -1111,10 +1213,7 @@ def get_household_settings():
         supabase
         .table("household_settings")
         .select("*")
-        .eq(
-            "family_id",
-            family_id,
-        )
+        .eq("family_id", family_id)
         .execute()
     )
 
@@ -1125,12 +1224,16 @@ def get_household_settings():
         "family_id": family_id,
         "my_allowance": 0,
         "spouse_allowance": 0,
+        "my_investment_budget": 0,
+        "spouse_investment_budget": 0,
     }
 
 
 def save_household_settings(
     my_allowance,
     spouse_allowance,
+    my_investment_budget=0,
+    spouse_investment_budget=0,
 ):
     supabase = get_supabase()
     family_id = get_family_id()
@@ -1142,8 +1245,9 @@ def save_household_settings(
             {
                 "family_id": family_id,
                 "my_allowance": my_allowance,
-                "spouse_allowance":
-                    spouse_allowance,
+                "spouse_allowance": spouse_allowance,
+                "my_investment_budget": my_investment_budget,
+                "spouse_investment_budget": spouse_investment_budget,
             },
             on_conflict="family_id",
         )
@@ -1233,3 +1337,246 @@ def get_family_id():
 
 
     return family_id
+
+# ==================================================
+# 투자 계좌
+# ==================================================
+
+def get_investment_accounts():
+    supabase = get_supabase()
+
+    response = (
+        supabase
+        .table("investment_accounts")
+        .select("*")
+        .order("owner")
+        .order("account_type")
+        .order("name")
+        .execute()
+    )
+
+    return response.data
+
+
+def add_investment_account(
+    owner,
+    account_type,
+    name,
+    memo="",
+):
+    supabase = get_supabase()
+    family_id = get_family_id()
+
+    response = (
+        supabase
+        .table("investment_accounts")
+        .insert({
+            "family_id": family_id,
+            "owner": owner,
+            "account_type": account_type,
+            "name": name.strip(),
+            "memo": memo,
+        })
+        .execute()
+    )
+
+    return response.data
+
+
+def update_investment_account(
+    account_id,
+    owner,
+    account_type,
+    name,
+    memo="",
+):
+    supabase = get_supabase()
+
+    response = (
+        supabase
+        .table("investment_accounts")
+        .update({
+            "owner": owner,
+            "account_type": account_type,
+            "name": name.strip(),
+            "memo": memo,
+        })
+        .eq("id", account_id)
+        .execute()
+    )
+
+    return response.data
+
+
+def delete_investment_account(
+    account_id,
+):
+    supabase = get_supabase()
+
+    response = (
+        supabase
+        .table("investment_accounts")
+        .delete()
+        .eq("id", account_id)
+        .execute()
+    )
+
+    return response.data
+
+
+# ==================================================
+# 투자 거래
+# ==================================================
+
+def get_investment_transactions(
+    account_id=None,
+):
+    supabase = get_supabase()
+
+    query = (
+        supabase
+        .table("investment_transactions")
+        .select("*")
+    )
+
+    if account_id is not None:
+        query = query.eq(
+            "account_id",
+            account_id,
+        )
+
+    response = (
+        query
+        .order(
+            "transaction_date",
+            desc=True,
+        )
+        .order(
+            "id",
+            desc=True,
+        )
+        .execute()
+    )
+
+    return response.data
+
+
+def add_investment_transaction(
+    account_id,
+    transaction_date,
+    transaction_type,
+    symbol=None,
+    asset_name=None,
+    quantity=None,
+    price=None,
+    amount=None,
+    fee=0,
+    memo="",
+    currency="KRW",
+    exchange_rate=None,
+):
+    supabase = get_supabase()
+    family_id = get_family_id()
+
+    response = (
+        supabase
+        .table("investment_transactions")
+        .insert({
+            "family_id": family_id,
+            "account_id": account_id,
+            "transaction_date": str(
+                transaction_date
+            ),
+            "transaction_type":
+                transaction_type,
+            "symbol":
+                symbol.strip()
+                if symbol
+                else None,
+            "asset_name":
+                asset_name.strip()
+                if asset_name
+                else None,
+            "quantity": quantity,
+            "price": price,
+            "amount": amount,
+            "fee": fee or 0,
+            "memo": memo,
+            "currency": currency,
+            "exchange_rate":
+                exchange_rate,
+        })
+        .execute()
+    )
+
+    return response.data
+
+
+def delete_investment_transaction(
+    transaction_id,
+):
+    supabase = get_supabase()
+
+    response = (
+        supabase
+        .table("investment_transactions")
+        .delete()
+        .eq(
+            "id",
+            transaction_id,
+        )
+        .execute()
+    )
+
+    return response.data
+
+def update_investment_transaction(
+    transaction_id,
+    transaction_date,
+    transaction_type,
+    symbol=None,
+    asset_name=None,
+    quantity=None,
+    price=None,
+    amount=None,
+    fee=0,
+    memo="",
+    currency="KRW",
+    exchange_rate=None,
+):
+    supabase = get_supabase()
+
+    response = (
+        supabase
+        .table("investment_transactions")
+        .update({
+            "transaction_date": str(
+                transaction_date
+            ),
+            "transaction_type":
+                transaction_type,
+            "symbol":
+                symbol.strip()
+                if symbol
+                else None,
+            "asset_name":
+                asset_name.strip()
+                if asset_name
+                else None,
+            "quantity": quantity,
+            "price": price,
+            "amount": amount,
+            "fee": fee or 0,
+            "memo": memo,
+            "currency": currency,
+            "exchange_rate":
+                exchange_rate,
+        })
+        .eq(
+            "id",
+            transaction_id,
+        )
+        .execute()
+    )
+
+    return response.data

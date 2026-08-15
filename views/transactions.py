@@ -60,6 +60,23 @@ show_help(
 )
 
 
+show_help(
+    "카드 실적 포함은 뭔가요?",
+    (
+        "카드 결제 중 이번 달 카드사 실적으로 인정되는 거래인지 표시합니다. "
+        "일반적인 카드 결제는 체크된 상태로 두면 됩니다."
+    ),
+    example=(
+        "예: 일반 쇼핑·식비 결제 → 실적 포함 / "
+        "실적 제외 대상인 세금·상품권 등 → 체크 해제"
+    ),
+    warning=(
+        "카드사마다 실적 제외 조건이 다르므로 실제 카드 약관을 기준으로 "
+        "실적 포함 여부를 선택해야 합니다."
+    ),
+)
+
+
 # ==================================================
 # 3. 거래 추가
 # ==================================================
@@ -161,11 +178,12 @@ if selected_main_category_id is not None:
 
 
 # ==================================================
-# 카드
+# 카드 / 실적
 # ==================================================
 
 payment_method = "기타"
 selected_card_id = None
+counts_for_performance = False
 
 
 if transaction_type == "지출":
@@ -213,6 +231,35 @@ if transaction_type == "지출":
             selected_card_id = (
                 selected_card["id"]
             )
+
+
+            counts_for_performance = (
+                st.checkbox(
+                    "카드 실적에 포함",
+                    value=True,
+                    key=(
+                        "add_counts_for_performance"
+                    ),
+                )
+            )
+
+
+            monthly_performance = float(
+                selected_card.get(
+                    "monthly_performance",
+                    0,
+                )
+                or 0
+            )
+
+
+            if monthly_performance > 0:
+
+                st.caption(
+                    "이 카드의 월 실적 목표: "
+                    f"₩{int(monthly_performance):,}"
+                )
+
 
         else:
 
@@ -300,6 +347,14 @@ if submitted:
             amount=amount,
             memo=memo,
             card_id=selected_card_id,
+            counts_for_performance=(
+                counts_for_performance
+                if (
+                    transaction_type == "지출"
+                    and payment_method == "카드"
+                )
+                else False
+            ),
         )
 
         st.success(
@@ -357,6 +412,21 @@ if transactions:
                 card_name = ""
 
 
+        is_card = bool(card_name)
+
+
+        counts_performance = (
+            bool(
+                transaction.get(
+                    "counts_for_performance",
+                    True,
+                )
+            )
+            if is_card
+            else False
+        )
+
+
         rows.append({
             "거래일":
                 transaction[
@@ -384,6 +454,17 @@ if transactions:
                     card_name
                     if card_name
                     else "기타"
+                ),
+
+            "실적":
+                (
+                    "포함"
+                    if counts_performance
+                    else (
+                        "제외"
+                        if is_card
+                        else "-"
+                    )
                 ),
 
             "사용자":
@@ -686,10 +767,11 @@ if edit_main_category_id is not None:
 
 
 # ==================================================
-# 수정용 카드
+# 수정용 카드 / 실적
 # ==================================================
 
 edit_card_id = None
+edit_counts_for_performance = False
 
 
 if (
@@ -708,8 +790,7 @@ if (
 
         current_card_id = (
             int(current_card_id)
-            if current_card_id
-            is not None
+            if current_card_id is not None
             else None
         )
 
@@ -802,6 +883,7 @@ if (
                 ):
 
                     card_index = index
+
                     break
 
 
@@ -818,11 +900,55 @@ if (
         )
 
 
-        edit_card_id = (
+        edit_card = (
             edit_card_options[
                 edit_card_label
-            ]["id"]
+            ]
         )
+
+
+        edit_card_id = (
+            edit_card["id"]
+        )
+
+
+        current_counts_for_performance = bool(
+            selected_transaction.get(
+                "counts_for_performance",
+                True,
+            )
+        )
+
+
+        edit_counts_for_performance = (
+            st.checkbox(
+                "카드 실적에 포함",
+                value=(
+                    current_counts_for_performance
+                ),
+                key=(
+                    f"edit_counts_for_performance_"
+                    f"{transaction_id}"
+                ),
+            )
+        )
+
+
+        edit_monthly_performance = float(
+            edit_card.get(
+                "monthly_performance",
+                0,
+            )
+            or 0
+        )
+
+
+        if edit_monthly_performance > 0:
+
+            st.caption(
+                "이 카드의 월 실적 목표: "
+                f"₩{int(edit_monthly_performance):,}"
+            )
 
 
 # ==================================================
@@ -950,8 +1076,22 @@ if edit_submit:
                 if (
                     edit_transaction_type
                     == "지출"
+                    and
+                    edit_payment_method
+                    == "카드"
                 )
                 else None
+            ),
+            counts_for_performance=(
+                edit_counts_for_performance
+                if (
+                    edit_transaction_type
+                    == "지출"
+                    and
+                    edit_payment_method
+                    == "카드"
+                )
+                else False
             ),
         )
 
